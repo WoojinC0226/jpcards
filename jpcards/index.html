@@ -746,6 +746,63 @@ document.getElementById('wordSpk').addEventListener('click',e=>{
 // 문법 가이드
 
 // ===== 자동재생 (자면서 듣기) =====
+
+// ===== mp3 오디오 재생 (백그라운드 지원) =====
+const AUDIO={el:null,useMp3:null,base:'./audio/'};
+function audioInit(){
+  if(!AUDIO.el){
+    AUDIO.el=new Audio();
+    AUDIO.el.preload='auto';
+  }
+}
+// mp3 파일 존재 여부를 첫 파일로 감지 (한 번만)
+async function detectMp3(deck){
+  if(AUDIO.useMp3!==null)return AUDIO.useMp3;
+  try{
+    const res=await fetch(AUDIO.base+deck+'_0_ja.mp3',{method:'HEAD'});
+    AUDIO.useMp3=res.ok;
+  }catch(e){AUDIO.useMp3=false;}
+  return AUDIO.useMp3;
+}
+// mp3 1개 재생 후 콜백. 실패 시 브라우저 음성으로 대체
+function playAudio(fname, fallbackText, fallbackLang, cb){
+  audioInit();
+  const url=AUDIO.base+fname+'.mp3';
+  const a=AUDIO.el;
+  let done=false;
+  const finish=(useFallback)=>{
+    if(done)return; done=true;
+    a.onended=null;a.onerror=null;
+    if(useFallback){ speakLang(fallbackText,fallbackLang,cb); }
+    else { if(cb)cb(); }
+  };
+  a.onended=()=>finish(false);
+  a.onerror=()=>finish(true);
+  try{ a.src=url; a.currentTime=0; }catch(e){}
+  const p=a.play();
+  if(p&&p.catch)p.catch(()=>finish(true));
+}
+// Media Session (잠금화면 제어)
+function setupMediaSession(){
+  if('mediaSession' in navigator){
+    navigator.mediaSession.setActionHandler('play',()=>{ if(!AP.playing)apToggle(); });
+    navigator.mediaSession.setActionHandler('pause',()=>{ if(AP.playing)apToggle(); });
+    navigator.mediaSession.setActionHandler('nexttrack',()=>apJump(1));
+    navigator.mediaSession.setActionHandler('previoustrack',()=>apJump(-1));
+  }
+}
+function updateMediaMeta(d){
+  if('mediaSession' in navigator){
+    try{
+      navigator.mediaSession.metadata=new MediaMetadata({
+        title:d.w+' · '+d.p,
+        artist:cleanKo(d.m),
+        album:'일본어 단어 카드',
+      });
+    }catch(e){}
+  }
+}
+
 const AP={deck:null,idx:0,playing:false,timer:null,gapJa:1200,gapKo:1000,gapNext:1600,speed:1};
 function apRenderDeckList(){
   const list=document.getElementById('apDeckList');list.innerHTML='';
@@ -780,6 +837,7 @@ function apStart(deck){
   document.getElementById('apDeckLabel').textContent=DECK_META[deck].icon+' '+DECK_META[deck].label;
   document.getElementById('apTot').textContent=DECKS[deck].length;
   document.getElementById('apToggle').textContent='⏸';
+  setupMediaSession();
   apPlayCurrent();
 }
 function apShowWord(d){
@@ -798,19 +856,23 @@ function apPlayCurrent(){
   apShowWord(d);
   const jaText=d.wk||d.w;
   const koText=cleanKo(d.m);
+  const fJa=AP.deck+'_'+AP.idx+'_ja';
+  const fKo=AP.deck+'_'+AP.idx+'_ko';
+  updateMediaMeta(d);
   // 일본어 1회 → 일본어 2회 → 한국어 → 다음
   apSetPhase('日本語');
-  speechSynthesis.cancel();
+  if('speechSynthesis' in window)speechSynthesis.cancel();
   step1();
-  function step1(){ if(!AP.playing)return; speakLang(jaText,'ja-JP',()=>{ AP.timer=setTimeout(step2,AP.gapJa); }); }
-  function step2(){ if(!AP.playing)return; apSetPhase('日本語 ×2'); speakLang(jaText,'ja-JP',()=>{ AP.timer=setTimeout(step3,AP.gapKo); }); }
-  function step3(){ if(!AP.playing)return; apSetPhase('한국어'); speakLang(koText,'ko-KR',()=>{ AP.timer=setTimeout(next,AP.gapNext); }); }
+  function step1(){ if(!AP.playing)return; playAudio(fJa,jaText,'ja-JP',()=>{ AP.timer=setTimeout(step2,AP.gapJa); }); }
+  function step2(){ if(!AP.playing)return; apSetPhase('日本語 ×2'); playAudio(fJa,jaText,'ja-JP',()=>{ AP.timer=setTimeout(step3,AP.gapKo); }); }
+  function step3(){ if(!AP.playing)return; apSetPhase('한국어'); playAudio(fKo,koText,'ko-KR',()=>{ AP.timer=setTimeout(next,AP.gapNext); }); }
   function next(){ if(!AP.playing)return; AP.idx++; apPlayCurrent(); }
 }
 function apStop(){
   AP.playing=false;
   if(AP.timer)clearTimeout(AP.timer);
   if('speechSynthesis' in window)speechSynthesis.cancel();
+  if(AUDIO.el){try{AUDIO.el.pause();}catch(e){}}
 }
 function apToggle(){
   if(AP.playing){apStop();document.getElementById('apToggle').textContent='▶';apSetPhase('일시정지');}
